@@ -1,0 +1,14 @@
+{
+  "name": "video-downloader-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "telegraf": "^4.12.2",
+    "axios": "^1.6.8",
+    "cheerio": "^1.0.0-rc.12",
+    "ytdl-core": "^4.11.5"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
