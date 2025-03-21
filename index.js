@@ -1,9 +1,5 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
-const cheerio = require('cheerio');
-const ytdl = require('ytdl-core');
-const fs = require('fs');
-const path = require('path');
 
 // Get the bot token from environment variable
 const botToken = process.env.TOKEN;
@@ -15,176 +11,43 @@ if (!botToken) {
 
 const bot = new Telegraf(botToken);
 
+// API endpoint
+const API_URL = 'https://ar-api-08uk.onrender.com/ava';
+
 // Introduction message on /start
 bot.start((ctx) => {
-  ctx.reply(`
-🎥 *Video Downloader Bot* 🎥
-Powered by @KaIi_Linux_BOT
-
-Hi! I can download videos from Instagram and YouTube. Just send me a video link, and I’ll get it for you. 🚀
-
-📌 Supported platforms:
-- Instagram (public videos)
-- YouTube (public videos)
-
-⚠️ Note: Videos must be under 50 MB due to Telegram limits.
-  `, { parse_mode: 'Markdown' });
+  ctx.reply('Ask your question, and I’ll get you an answer! 🧠');
 });
 
-// Function to normalize URLs (remove query params like ?igsh=)
-function normalizeUrl(url) {
-  try {
-    const urlObj = new URL(url);
-    return urlObj.origin + urlObj.pathname;
-  } catch (error) {
-    return url;
-  }
-}
-
-// Function to scrape Instagram video URL with fallback
-async function getInstagramVideoUrl(url) {
-  try {
-    // Normalize the URL
-    url = normalizeUrl(url);
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive'
-      }
-    });
-
-    const $ = cheerio.load(response.data);
-
-    // Try the og:video meta tag first
-    let videoUrl = $('meta[property="og:video"]').attr('content');
-    if (videoUrl) return videoUrl;
-
-    // Fallback: Look for the video URL in the page's JSON data
-    const scriptTags = $('script[type="application/ld+json"]').html();
-    if (scriptTags) {
-      const jsonData = JSON.parse(scriptTags);
-      if (jsonData && jsonData.video && jsonData.video.contentUrl) {
-        return jsonData.video.contentUrl;
-      }
-    }
-
-    // Another fallback: Check for window._sharedData (older Instagram method)
-    const sharedDataScript = $('script').filter((i, el) => $(el).html().includes('window._sharedData')).html();
-    if (sharedDataScript) {
-      const sharedData = sharedDataScript.match(/window\._sharedData\s*=\s*({.+?});/);
-      if (sharedData && sharedData[1]) {
-        const parsedData = JSON.parse(sharedData[1]);
-        const media = parsedData.entry_data?.PostPage?.[0]?.graphql?.shortcode_media;
-        if (media?.video_url) {
-          return media.video_url;
-        }
-      }
-    }
-
-    throw new Error('Could not find Instagram video URL in page data.');
-  } catch (error) {
-    throw new Error('Failed to scrape Instagram video: ' + error.message);
-  }
-}
-
-// Function to download YouTube video with better format selection
-async function downloadYouTubeVideo(url) {
-  try {
-    const info = await ytdl.getInfo(url);
-    // Filter formats: prioritize smaller files (Telegram limit: 50 MB)
-    const format = ytdl.chooseFormat(info.formats, { 
-      quality: 'lowestvideo', // Prioritize lower quality to stay under 50 MB
-      filter: (format) => format.container === 'mp4' && format.hasVideo && format.hasAudio
-    });
-
-    if (!format) throw new Error('No suitable YouTube format found (must be MP4 with video and audio).');
-
-    const filePath = path.join(__dirname, `youtube-video-${Date.now()}.mp4`);
-    const videoStream = ytdl(url, { format });
-    const fileStream = fs.createWriteStream(filePath);
-
-    return new Promise((resolve, reject) => {
-      videoStream.pipe(fileStream);
-      fileStream.on('finish', () => {
-        // Check file size before resolving
-        const stats = fs.statSync(filePath);
-        if (stats.size > 50 * 1024 * 1024) {
-          fs.unlinkSync(filePath);
-          reject(new Error('YouTube video is too large (>50 MB). Try a shorter video.'));
-        } else {
-          resolve(filePath);
-        }
-      });
-      fileStream.on('error', (err) => reject(err));
-    });
-  } catch (error) {
-    throw new Error('Failed to download YouTube video: ' + error.message);
-  }
-}
-
-// Function to download a video from a direct URL (used for Instagram)
-async function downloadVideoFromUrl(videoUrl, fileName) {
-  const filePath = path.join(__dirname, fileName);
-  const response = await axios.get(videoUrl, { responseType: 'stream' });
-  
-  // Get file size from headers if available
-  const contentLength = response.headers['content-length'];
-  if (contentLength && parseInt(contentLength) > 50 * 1024 * 1024) {
-    throw new Error('Instagram video is too large (>50 MB).');
-  }
-
-  const fileStream = fs.createWriteStream(filePath);
-  response.data.pipe(fileStream);
-
-  return new Promise((resolve, reject) => {
-    fileStream.on('finish', () => {
-      // Double-check file size
-      const stats = fs.statSync(filePath);
-      if (stats.size > 50 * 1024 * 1024) {
-        fs.unlinkSync(filePath);
-        reject(new Error('Instagram video is too large (>50 MB).'));
-      } else {
-        resolve(filePath);
-      }
-    });
-    fileStream.on('error', (err) => reject(err));
-  });
-}
-
-// Handle incoming messages (links)
+// Handle incoming text messages
 bot.on('text', async (ctx) => {
-  const url = ctx.message.text.trim();
-  let videoPath = null;
+  const userQuery = ctx.message.text.trim();
 
   try {
-    // Check if the link is Instagram or YouTube
-    if (url.includes('instagram.com')) {
-      ctx.reply('🔍 Detecting Instagram video...');
-      const videoUrl = await getInstagramVideoUrl(url);
+    // Notify user that we're processing
+    await ctx.reply('Thinking... 🤔');
 
-      // Download the video
-      ctx.reply('⏳ Downloading Instagram video...');
-      videoPath = await downloadVideoFromUrl(videoUrl, `insta-video-${Date.now()}.mp4`);
-    } else if (url.includes('youtube.com') || url.includes('youtu.be')) {
-      ctx.reply('🔍 Detecting YouTube video...');
-      ctx.reply('⏳ Downloading YouTube video...');
-      videoPath = await downloadYouTubeVideo(url);
-    } else {
-      ctx.reply('❌ Please send a valid Instagram or YouTube video link.');
-      return;
+    // Make the API request
+    const response = await axios.get(API_URL, {
+      params: { q: userQuery }
+    });
+
+    // Extract the response from the API
+    const data = response.data;
+    if (data.status !== 200 || data.successful !== 'success') {
+      throw new Error('API request failed.');
     }
 
-    // Send the video to the user
-    ctx.reply('🚀 Sending video...');
-    await ctx.replyWithVideo({ source: videoPath });
+    const answer = data.response;
+    if (!answer) {
+      throw new Error('No response from the API.');
+    }
 
-    // Clean up
-    fs.unlinkSync(videoPath);
+    // Send the response to the user
+    await ctx.reply(answer);
   } catch (error) {
-    if (videoPath && fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-    ctx.reply('❌ Error: ' + error.message);
+    console.error('Error:', error.message);
+    await ctx.reply('❌ Sorry, I couldn’t get an answer. Try again later.');
   }
 });
 
