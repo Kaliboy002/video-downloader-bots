@@ -1,101 +1,110 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
-const { MongoClient } = require('mongodb');
+const fs = require('fs');
+const path = require('path');
 
 // Get the bot token from environment variable
 const botToken = process.env.TOKEN;
-const mongoUri = process.env.MONGO_URI;
 
 if (!botToken) {
   console.error('Bot token not configured. Please set the TOKEN environment variable.');
   process.exit(1);
 }
 
-if (!mongoUri) {
-  console.error('MongoDB URI not configured. Please set the MONGO_URI environment variable.');
-  process.exit(1);
-}
-
 const bot = new Telegraf(botToken);
 
-// API endpoint
-const API_URL = 'https://ar-api-08uk.onrender.com/ava';
+// Instagram downloader API (using a public service)
+const INSTAGRAM_DOWNLOADER_API = 'https://sssinstagram.com/api/convert';
 
-// MongoDB setup
-let db;
-async function connectToMongo() {
-  try {
-    const client = new MongoClient(mongoUri, { useUnifiedTopology: true });
-    await client.connect();
-    console.log('Connected to MongoDB');
-    db = client.db('shah'); // Database name from your URI
-  } catch (error) {
-    console.error('Failed to connect to MongoDB:', error);
-    process.exit(1);
-  }
+// Temporary directory for storing videos
+const TEMP_DIR = path.join(__dirname, 'temp');
+
+// Ensure the temp directory exists
+if (!fs.existsSync(TEMP_DIR)) {
+  fs.mkdirSync(TEMP_DIR);
 }
-
-// Store chat ID in MongoDB
-async function storeChatId(chatId) {
-  try {
-    const collection = db.collection('chat_ids');
-    await collection.updateOne(
-      { chatId },
-      { $set: { chatId, lastInteraction: new Date() } },
-      { upsert: true }
-    );
-    console.log(`Stored chat ID: ${chatId}`);
-  } catch (error) {
-    console.error('Failed to store chat ID:', error);
-  }
-}
-
-// Connect to MongoDB when the bot starts
-connectToMongo();
 
 // Introduction message on /start
-bot.start(async (ctx) => {
-  const chatId = ctx.chat.id;
-  await storeChatId(chatId); // Store chat ID
-  ctx.reply('Ask your question, and I’ll get you an answer! 🧠');
+bot.start((ctx) => {
+  ctx.reply('Welcome to the Instagram Video Downloader Bot! 🎥\nSend me an Instagram video URL, and I’ll download and send the video to you.');
 });
 
-// Handle incoming text messages (non-blocking)
+// Function to validate Instagram URL
+function isValidInstagramUrl(url) {
+  const instagramRegex = /^(https?:\/\/)?(www\.)?instagram\.com\/(p|reel|tv|stories)\/[A-Za-z0-9_-]+/;
+  return instagramRegex.test(url);
+}
+
+// Function to download Instagram video
+async function downloadInstagramVideo(url) {
+  try {
+    // Make request to the Instagram downloader API
+    const response = await axios.get(INSTAGRAM_DOWNLOADER_API, {
+      params: { url },
+      timeout: 15000 // 15-second timeout
+    });
+
+    const data = response.data;
+    if (!data || !data[0] || !data[0].url) {
+      throw new Error('No downloadable video found.');
+    }
+
+    // Get the first downloadable video URL
+    const videoUrl = data[0].url;
+
+    // Download the video
+    const videoResponse = await axios({
+      url: videoUrl,
+      method: 'GET',
+      responseType: 'stream',
+      timeout: 30000 // 30-second timeout for download
+    });
+
+    // Generate a unique filename
+    const fileName = `video_${Date.now()}.mp4`;
+    const filePath = path.join(TEMP_DIR, fileName);
+
+    // Save the video to the temp directory
+    const writer = fs.createWriteStream(filePath);
+    videoResponse.data.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => resolve(filePath));
+      writer.on('error', (err) => reject(err));
+    });
+  } catch (error) {
+    throw new Error(`Failed to download video: ${error.message}`);
+  }
+}
+
+// Handle incoming text messages (Instagram URLs)
 bot.on('text', async (ctx) => {
-  const chatId = ctx.chat.id;
-  const userQuery = ctx.message.text.trim();
+  const userMessage = ctx.message.text.trim();
 
-  // Store chat ID
-  await storeChatId(chatId);
+  // Validate the URL
+  if (!isValidInstagramUrl(userMessage)) {
+    return ctx.reply('Please send a valid Instagram video URL (e.g., https://www.instagram.com/reel/abc123/).');
+  }
 
-  // Send "Thinking..." message immediately
-  ctx.reply('Thinking... 🤔').catch((err) => console.error('Failed to send thinking message:', err));
+  // Send "Processing..." message
+  ctx.reply('Processing your request... ⏳').catch((err) => console.error('Failed to send processing message:', err));
 
-  // Process the API request in a non-blocking way
+  // Process the download in a non-blocking way
   setImmediate(async () => {
     try {
-      // Make the API request
-      const response = await axios.get(API_URL, {
-        params: { q: userQuery },
-        timeout: 10000 // 10-second timeout to avoid hanging
+      // Download the video
+      const videoPath = await downloadInstagramVideo(userMessage);
+
+      // Send the video to the user
+      await ctx.replyWithVideo({ source: videoPath }, { caption: 'Here’s your Instagram video! 🎥' });
+
+      // Clean up: Delete the temporary file
+      fs.unlink(videoPath, (err) => {
+        if (err) console.error('Failed to delete temporary file:', err);
       });
-
-      // Extract the response from the API
-      const data = response.data;
-      if (data.status !== 200 || data.successful !== 'success') {
-        throw new Error('API request failed.');
-      }
-
-      const answer = data.response;
-      if (!answer) {
-        throw new Error('No response from the API.');
-      }
-
-      // Send the response to the user
-      await ctx.reply(answer);
     } catch (error) {
       console.error('Error:', error.message);
-      await ctx.reply('❌ Sorry, I couldn’t get an answer. Try again later.');
+      await ctx.reply('❌ Sorry, I couldn’t download the video. Please try again later or check the URL.');
     }
   });
 });
