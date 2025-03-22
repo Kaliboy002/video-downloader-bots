@@ -16,12 +16,17 @@ const bot = new Telegraf(botToken);
 // Instagram downloader API (using a public service)
 const INSTAGRAM_DOWNLOADER_API = 'https://sssinstagram.com/api/convert';
 
-// Temporary directory for storing videos
-const TEMP_DIR = path.join(__dirname, 'temp');
+// Temporary directory for storing videos (use /tmp for Vercel)
+const TEMP_DIR = '/tmp/instagram-downloader';
 
 // Ensure the temp directory exists
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR);
+try {
+  if (!fs.existsSync(TEMP_DIR)) {
+    fs.mkdirSync(TEMP_DIR, { recursive: true });
+  }
+} catch (error) {
+  console.error('Failed to create temp directory:', error);
+  process.exit(1);
 }
 
 // Introduction message on /start
