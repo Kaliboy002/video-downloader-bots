@@ -13,11 +13,11 @@ if (!botToken) {
 
 const bot = new Telegraf(botToken);
 
-// YouTube downloader API (using your provided API)
-const YOUTUBE_DOWNLOADER_API = 'https://ar-api-08uk.onrender.com/pvtyt';
+// AI image generation API (using your provided API)
+const IMAGE_GENERATION_API = 'https://ar-api-08uk.onrender.com/turbo';
 
-// Temporary directory for storing videos (use /tmp for Vercel)
-const TEMP_DIR = '/tmp/youtube-downloader';
+// Temporary directory for storing images (use /tmp for Vercel)
+const TEMP_DIR = '/tmp/image-generator';
 
 // Ensure the temp directory exists
 try {
@@ -31,98 +31,107 @@ try {
 
 // Introduction message on /start
 bot.start((ctx) => {
-  ctx.reply('Welcome to the YouTube Video Downloader Bot! 🎥\nSend me a YouTube video URL, and I’ll download and send the video to you.');
+  ctx.reply('Welcome to the AI Image Generator Bot! 🖼️\nSend me a text prompt (e.g., "red car BMW"), and I’ll generate and send the images to you.');
 });
 
-// Function to validate YouTube URL
-function isValidYouTubeUrl(url) {
-  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/(watch\?v=|embed\/|v\/|.+\?v=)?([^&=%\?]{11})/;
-  return youtubeRegex.test(url);
-}
-
-// Function to download YouTube video
-async function downloadYouTubeVideo(url) {
+// Function to download an image from a URL
+async function downloadImage(imageUrl, index) {
   try {
-    // Make request to the YouTube downloader API
-    const response = await axios.get(YOUTUBE_DOWNLOADER_API, {
-      params: {
-        url: url,
-        format: 'mp4' // Request video format
-      },
-      timeout: 15000 // 15-second timeout
-    });
-
-    const data = response.data;
-    if (data.status !== 200 || data.successful !== 'success' || !data.data || !data.data.download) {
-      throw new Error('API returned an error or no downloadable video found.');
-    }
-
-    // Get the downloadable video URL and title
-    const videoUrl = data.data.download;
-    const videoTitle = data.data.title || 'YouTube Video';
-
-    // Download the video
-    const videoResponse = await axios({
-      url: videoUrl,
+    // Download the image
+    const imageResponse = await axios({
+      url: imageUrl,
       method: 'GET',
       responseType: 'stream',
       timeout: 30000 // 30-second timeout for download
     });
 
     // Generate a unique filename
-    const fileName = `video_${Date.now()}.mp4`;
+    const fileName = `image_${Date.now()}_${index}.png`;
     const filePath = path.join(TEMP_DIR, fileName);
 
-    // Save the video to the temp directory
+    // Save the image to the temp directory
     const writer = fs.createWriteStream(filePath);
-    videoResponse.data.pipe(writer);
+    imageResponse.data.pipe(writer);
 
     return new Promise((resolve, reject) => {
-      writer.on('finish', () => resolve({ filePath, videoTitle }));
+      writer.on('finish', () => resolve(filePath));
       writer.on('error', (err) => reject(err));
     });
   } catch (error) {
-    throw new Error(`Failed to download video: ${error.message}`);
+    throw new Error(`Failed to download image: ${error.message}`);
   }
 }
 
-// Handle incoming text messages (YouTube URLs)
-bot.on('text', async (ctx) => {
-  const userMessage = ctx.message.text.trim();
+// Function to generate images from a prompt
+async function generateImages(prompt) {
+  try {
+    // Make request to the image generation API
+    const response = await axios.get(IMAGE_GENERATION_API, {
+      params: { prompt: prompt },
+      timeout: 15000 // 15-second timeout
+    });
 
-  // Validate the URL
-  if (!isValidYouTubeUrl(userMessage)) {
-    return ctx.reply('Please send a valid YouTube video URL (e.g., https://youtu.be/abc123).');
+    const data = response.data;
+    if (!data.images || !Array.isArray(data.images) || data.images.length === 0) {
+      throw new Error('API returned no images.');
+    }
+
+    // Download each image
+    const imagePaths = [];
+    for (let i = 0; i < data.images.length; i++) {
+      const imageUrl = data.images[i];
+      const imagePath = await downloadImage(imageUrl, i);
+      imagePaths.push(imagePath);
+    }
+
+    return imagePaths;
+  } catch (error) {
+    throw new Error(`Failed to generate images: ${error.message}`);
+  }
+}
+
+// Handle incoming text messages (prompts)
+bot.on('text', async (ctx) => {
+  const userPrompt = ctx.message.text.trim();
+
+  // Ignore commands like /start
+  if (userPrompt.startsWith('/')) {
+    return;
   }
 
   // Send "Processing..." message
   ctx.reply('Processing your request... ⏳').catch((err) => console.error('Failed to send processing message:', err));
 
-  // Process the download in a non-blocking way
+  // Process the image generation in a non-blocking way
   setImmediate(async () => {
     try {
-      // Download the video
-      const { filePath, videoTitle } = await downloadYouTubeVideo(userMessage);
+      // Generate and download the images
+      const imagePaths = await generateImages(userPrompt);
 
-      // Check file size (Telegram has a 50 MB limit for bots)
-      const stats = fs.statSync(filePath);
-      if (stats.size > 50 * 1024 * 1024) { // 50 MB in bytes
-        throw new Error('Video is too large (max 50 MB for Telegram).');
+      // Send each image to the user
+      for (let i = 0; i < imagePaths.length; i++) {
+        const imagePath = imagePaths[i];
+
+        // Check file size (Telegram has a 10 MB limit for photos)
+        const stats = fs.statSync(imagePath);
+        if (stats.size > 10 * 1024 * 1024) { // 10 MB in bytes
+          throw new Error(`Image ${i + 1} is too large (max 10 MB for Telegram photos).`);
+        }
+
+        // Send the image
+        await ctx.replyWithPhoto(
+          { source: imagePath },
+          { caption: `Generated image ${i + 1} for prompt: "${userPrompt}" 🖼️` }
+        );
+
+        // Clean up: Delete the temporary file
+        fs.unlink(imagePath, (err) => {
+          if (err) console.error('Failed to delete temporary file:', err);
+        });
       }
-
-      // Send the video to the user
-      await ctx.replyWithVideo(
-        { source: filePath },
-        { caption: `Here’s your YouTube video: ${videoTitle} 🎥` }
-      );
-
-      // Clean up: Delete the temporary file
-      fs.unlink(filePath, (err) => {
-        if (err) console.error('Failed to delete temporary file:', err);
-      });
     } catch (error) {
       console.error('Error:', error.message);
-      await ctx.reply(`❌ Sorry, I couldn’t download the video. ${error.message}`);
+      await ctx.reply(`❌ Sorry, I couldn’t generate the images. ${error.message}`);
     }
   });
 });
