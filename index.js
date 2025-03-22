@@ -13,8 +13,8 @@ if (!botToken) {
 
 const bot = new Telegraf(botToken);
 
-// Instagram downloader API (using a public service)
-const INSTAGRAM_DOWNLOADER_API = 'https://sssinstagram.com/api/convert';
+// Instagram downloader API (using snapinsta.app)
+const INSTAGRAM_DOWNLOADER_API = 'https://snapinsta.app/api/ajaxSearch';
 
 // Temporary directory for storing videos (use /tmp for Vercel)
 const TEMP_DIR = '/tmp/instagram-downloader';
@@ -43,19 +43,27 @@ function isValidInstagramUrl(url) {
 // Function to download Instagram video
 async function downloadInstagramVideo(url) {
   try {
-    // Make request to the Instagram downloader API
-    const response = await axios.get(INSTAGRAM_DOWNLOADER_API, {
-      params: { url },
+    // Make request to the Instagram downloader API (snapinsta.app)
+    const response = await axios.post(INSTAGRAM_DOWNLOADER_API, new URLSearchParams({ q: url }), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
       timeout: 15000 // 15-second timeout
     });
 
     const data = response.data;
-    if (!data || !data[0] || !data[0].url) {
-      throw new Error('No downloadable video found.');
+    if (data.status !== 'ok' || !data.data) {
+      throw new Error('API returned an error or no data.');
     }
 
-    // Get the first downloadable video URL
-    const videoUrl = data[0].url;
+    // snapinsta.app returns HTML in data.data, we need to extract the video URL
+    const videoUrlMatch = data.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/);
+    if (!videoUrlMatch || !videoUrlMatch[1]) {
+      throw new Error('No downloadable video URL found in API response.');
+    }
+
+    const videoUrl = videoUrlMatch[1];
 
     // Download the video
     const videoResponse = await axios({
@@ -100,6 +108,12 @@ bot.on('text', async (ctx) => {
       // Download the video
       const videoPath = await downloadInstagramVideo(userMessage);
 
+      // Check file size (Telegram has a 50 MB limit for bots)
+      const stats = fs.statSync(videoPath);
+      if (stats.size > 50 * 1024 * 1024) { // 50 MB in bytes
+        throw new Error('Video is too large (max 50 MB for Telegram).');
+      }
+
       // Send the video to the user
       await ctx.replyWithVideo({ source: videoPath }, { caption: 'Here’s your Instagram video! 🎥' });
 
@@ -109,7 +123,7 @@ bot.on('text', async (ctx) => {
       });
     } catch (error) {
       console.error('Error:', error.message);
-      await ctx.reply('❌ Sorry, I couldn’t download the video. Please try again later or check the URL.');
+      await ctx.reply(`❌ Sorry, I couldn’t download the video. ${error.message}`);
     }
   });
 });
