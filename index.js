@@ -13,11 +13,11 @@ if (!botToken) {
 
 const bot = new Telegraf(botToken);
 
-// Instagram downloader API (using snapinsta.app)
-const INSTAGRAM_DOWNLOADER_API = 'https://snapinsta.app/api/ajaxSearch';
+// YouTube downloader API (using your provided API)
+const YOUTUBE_DOWNLOADER_API = 'https://ar-api-08uk.onrender.com/pvtyt';
 
 // Temporary directory for storing videos (use /tmp for Vercel)
-const TEMP_DIR = '/tmp/instagram-downloader';
+const TEMP_DIR = '/tmp/youtube-downloader';
 
 // Ensure the temp directory exists
 try {
@@ -31,39 +31,35 @@ try {
 
 // Introduction message on /start
 bot.start((ctx) => {
-  ctx.reply('Welcome to the Instagram Video Downloader Bot! 🎥\nSend me an Instagram video URL, and I’ll download and send the video to you.');
+  ctx.reply('Welcome to the YouTube Video Downloader Bot! 🎥\nSend me a YouTube video URL, and I’ll download and send the video to you.');
 });
 
-// Function to validate Instagram URL
-function isValidInstagramUrl(url) {
-  const instagramRegex = /^(https?:\/\/)?(www\.)?instagram\.com\/(p|reel|tv|stories)\/[A-Za-z0-9_-]+/;
-  return instagramRegex.test(url);
+// Function to validate YouTube URL
+function isValidYouTubeUrl(url) {
+  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/(watch\?v=|embed\/|v\/|.+\?v=)?([^&=%\?]{11})/;
+  return youtubeRegex.test(url);
 }
 
-// Function to download Instagram video
-async function downloadInstagramVideo(url) {
+// Function to download YouTube video
+async function downloadYouTubeVideo(url) {
   try {
-    // Make request to the Instagram downloader API (snapinsta.app)
-    const response = await axios.post(INSTAGRAM_DOWNLOADER_API, new URLSearchParams({ q: url }), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    // Make request to the YouTube downloader API
+    const response = await axios.get(YOUTUBE_DOWNLOADER_API, {
+      params: {
+        url: url,
+        format: 'mp4' // Request video format
       },
       timeout: 15000 // 15-second timeout
     });
 
     const data = response.data;
-    if (data.status !== 'ok' || !data.data) {
-      throw new Error('API returned an error or no data.');
+    if (data.status !== 200 || data.successful !== 'success' || !data.data || !data.data.download) {
+      throw new Error('API returned an error or no downloadable video found.');
     }
 
-    // snapinsta.app returns HTML in data.data, we need to extract the video URL
-    const videoUrlMatch = data.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/);
-    if (!videoUrlMatch || !videoUrlMatch[1]) {
-      throw new Error('No downloadable video URL found in API response.');
-    }
-
-    const videoUrl = videoUrlMatch[1];
+    // Get the downloadable video URL and title
+    const videoUrl = data.data.download;
+    const videoTitle = data.data.title || 'YouTube Video';
 
     // Download the video
     const videoResponse = await axios({
@@ -82,7 +78,7 @@ async function downloadInstagramVideo(url) {
     videoResponse.data.pipe(writer);
 
     return new Promise((resolve, reject) => {
-      writer.on('finish', () => resolve(filePath));
+      writer.on('finish', () => resolve({ filePath, videoTitle }));
       writer.on('error', (err) => reject(err));
     });
   } catch (error) {
@@ -90,13 +86,13 @@ async function downloadInstagramVideo(url) {
   }
 }
 
-// Handle incoming text messages (Instagram URLs)
+// Handle incoming text messages (YouTube URLs)
 bot.on('text', async (ctx) => {
   const userMessage = ctx.message.text.trim();
 
   // Validate the URL
-  if (!isValidInstagramUrl(userMessage)) {
-    return ctx.reply('Please send a valid Instagram video URL (e.g., https://www.instagram.com/reel/abc123/).');
+  if (!isValidYouTubeUrl(userMessage)) {
+    return ctx.reply('Please send a valid YouTube video URL (e.g., https://youtu.be/abc123).');
   }
 
   // Send "Processing..." message
@@ -106,19 +102,22 @@ bot.on('text', async (ctx) => {
   setImmediate(async () => {
     try {
       // Download the video
-      const videoPath = await downloadInstagramVideo(userMessage);
+      const { filePath, videoTitle } = await downloadYouTubeVideo(userMessage);
 
       // Check file size (Telegram has a 50 MB limit for bots)
-      const stats = fs.statSync(videoPath);
+      const stats = fs.statSync(filePath);
       if (stats.size > 50 * 1024 * 1024) { // 50 MB in bytes
         throw new Error('Video is too large (max 50 MB for Telegram).');
       }
 
       // Send the video to the user
-      await ctx.replyWithVideo({ source: videoPath }, { caption: 'Here’s your Instagram video! 🎥' });
+      await ctx.replyWithVideo(
+        { source: filePath },
+        { caption: `Here’s your YouTube video: ${videoTitle} 🎥` }
+      );
 
       // Clean up: Delete the temporary file
-      fs.unlink(videoPath, (err) => {
+      fs.unlink(filePath, (err) => {
         if (err) console.error('Failed to delete temporary file:', err);
       });
     } catch (error) {
