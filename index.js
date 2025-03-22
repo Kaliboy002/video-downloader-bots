@@ -1,6 +1,7 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
 const { MongoClient } = require('mongodb');
+const FormData = require('form-data');
 
 // Get the bot token and MongoDB URI from environment variables
 const botToken = process.env.TOKEN;
@@ -18,8 +19,9 @@ if (!mongoUri) {
 
 const bot = new Telegraf(botToken);
 
-// API endpoint for image generation
+// API endpoints
 const API_URL = 'https://ar-api-08uk.onrender.com/turbo';
+const CATBOX_API_URL = 'https://catbox.moe/user/api.php';
 
 // MongoDB setup
 let db;
@@ -53,6 +55,29 @@ async function storeChatId(chatId) {
 // Connect to MongoDB when the bot starts
 connectToMongo();
 
+// Function to upload an image URL to Catbox
+async function uploadToCatbox(imageUrl) {
+  try {
+    const form = new FormData();
+    form.append('reqtype', 'urlupload');
+    form.append('url', imageUrl);
+
+    const response = await axios.post(CATBOX_API_URL, form, {
+      headers: form.getHeaders(),
+      timeout: 15000 // 15-second timeout for Catbox upload
+    });
+
+    const catboxUrl = response.data;
+    if (!catboxUrl || !catboxUrl.startsWith('https://files.catbox.moe/')) {
+      throw new Error('Invalid Catbox URL returned.');
+    }
+
+    return catboxUrl;
+  } catch (error) {
+    throw new Error('Failed to upload to Catbox: ' + error.message);
+  }
+}
+
 // Introduction message on /start
 bot.start(async (ctx) => {
   const chatId = ctx.chat.id;
@@ -74,7 +99,7 @@ bot.on('text', async (ctx) => {
   // Process the API request in a non-blocking way
   setImmediate(async () => {
     try {
-      // Make the API request
+      // Make the API request to generate images
       const response = await axios.get(API_URL, {
         params: { prompt: userPrompt },
         timeout: 30000 // 30-second timeout for image generation
@@ -88,9 +113,17 @@ bot.on('text', async (ctx) => {
         throw new Error('No images returned from the API.');
       }
 
-      // Send each image as a photo
+      // Upload each image to Catbox and send as a photo
       for (const url of imageUrls) {
-        await ctx.replyWithPhoto(url);
+        try {
+          // Upload to Catbox
+          const catboxUrl = await uploadToCatbox(url);
+          // Send the Catbox URL as a photo
+          await ctx.replyWithPhoto(catboxUrl);
+        } catch (error) {
+          console.error('Error processing image:', url, error.message);
+          await ctx.reply(`❌ Failed to process one image: ${error.message}`);
+        }
       }
 
       // Optionally send the "join" link from the API response
